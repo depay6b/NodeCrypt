@@ -5,7 +5,8 @@ import {
 } from './util.avatar.js';
 import {
 	roomsData,
-	activeRoomIndex
+	activeRoomIndex,
+	autoSaveRoomMessages
 } from './room.js';
 import {
 	escapeHTML,
@@ -55,7 +56,13 @@ export function addMsg(text, isHistory = false, msgType = 'text', timestamp = nu
 			text,
 			msgType,
 			timestamp: ts
-		})
+		});
+		// Auto-save messages after adding new message
+		// 添加新消息后自动保存
+		const rd = roomsData[activeRoomIndex];
+		if (rd && rd.roomName) {
+			autoSaveRoomMessages(rd.roomName, rd.messages);
+		}
 	}	const chatArea = $id('chat-area');
 	if (!chatArea) return;
 	let className = 'bubble me' + (msgType.includes('_private') ? ' private-message' : '');
@@ -213,7 +220,13 @@ export function addSystemMsg(text, isHistory = false, timestamp = null) {
 			type: 'system',
 			text,
 			timestamp: ts
-		})
+		});
+		// Auto-save messages after adding new message
+		// 添加新消息后自动保存
+		const rd = roomsData[activeRoomIndex];
+		if (rd && rd.roomName) {
+			autoSaveRoomMessages(rd.roomName, rd.messages);
+		}
 	}
 	const chatArea = $id('chat-area');
 	if (!chatArea) return;

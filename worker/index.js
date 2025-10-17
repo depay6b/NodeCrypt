@@ -14,8 +14,12 @@ export default {
 
     // 处理API请求
     if (url.pathname.startsWith('/api/')) {
-      // ...API 逻辑...
-      return new Response(JSON.stringify({ ok: true }), { headers: { "Content-Type": "application/json" } });
+      const id = env.CHAT_ROOM.idFromName('chat-room');
+      const stub = env.CHAT_ROOM.get(id);
+
+      // Forward API requests to Durable Object
+      // 将API请求转发到 Durable Object
+      return stub.fetch(request);
     }
 
     // 其余全部交给 ASSETS 处理（自动支持 hash 文件名和 SPA fallback）
@@ -25,18 +29,80 @@ export default {
 
 export class ChatRoom {  constructor(state, env) {
     this.state = state;
-    
+
     // Use objects like original server.js instead of Maps
     this.clients = {};
     this.channels = {};
-    
+
     this.config = {
       seenTimeout: 60000,
-      debug: false
+      debug: false,
+      messageRetentionDays: 7 // 默认保留7天消息
     };
-    
+
     // Initialize RSA key pair
     this.initRSAKeyPair();
+  }
+
+  // Save message to Durable Object storage
+  // 保存消息到 DO 存储
+  async saveMessage(channel, messageData) {
+    try {
+      const storageKey = `messages_${channel}`;
+
+      // Get existing messages
+      // 获取现有消息
+      let messages = await this.state.storage.get(storageKey) || [];
+
+      // Add timestamp if not present
+      // 添加时间戳
+      const message = {
+        ...messageData,
+        timestamp: messageData.timestamp || Date.now(),
+        expiresAt: Date.now() + (this.config.messageRetentionDays * 24 * 60 * 60 * 1000)
+      };
+
+      messages.push(message);
+
+      // Keep only last 1000 messages per channel to avoid storage bloat
+      // 每个频道最多保留1000条消息
+      if (messages.length > 1000) {
+        messages = messages.slice(-1000);
+      }
+
+      // Save back to storage
+      // 保存回存储
+      await this.state.storage.put(storageKey, messages);
+
+      logEvent('message-saved', `${channel}: ${messages.length} messages`, 'debug');
+    } catch (error) {
+      logEvent('save-message', error, 'error');
+    }
+  }
+
+  // Get messages for a channel
+  // 获取频道的历史消息
+  async getMessages(channel, limit = 100) {
+    try {
+      const storageKey = `messages_${channel}`;
+      let messages = await this.state.storage.get(storageKey) || [];
+
+      // Filter out expired messages
+      // 过滤过期消息
+      const now = Date.now();
+      messages = messages.filter(msg => !msg.expiresAt || msg.expiresAt > now);
+
+      // Save filtered messages back if any were removed
+      // 如果有消息被移除，保存过滤后的消息
+      await this.state.storage.put(storageKey, messages);
+
+      // Return most recent messages (limited)
+      // 返回最近的消息（限制数量）
+      return messages.slice(-limit);
+    } catch (error) {
+      logEvent('get-messages', error, 'error');
+      return [];
+    }
   }
 
   async initRSAKeyPair() {
@@ -107,6 +173,14 @@ export class ChatRoom {  constructor(state, env) {
   }
 
   async fetch(request) {
+    const url = new URL(request.url);
+
+    // Handle API requests
+    // 处理 API 请求
+    if (url.pathname.startsWith('/api/')) {
+      return this.handleAPI(request, url);
+    }
+
     // Check for WebSocket upgrade
     const upgradeHeader = request.headers.get('Upgrade');
     if (!upgradeHeader || upgradeHeader !== 'websocket') {
@@ -128,6 +202,69 @@ export class ChatRoom {  constructor(state, env) {
       status: 101,
       webSocket: client,
     });
+  }
+
+  // Handle API requests
+  // 处理 API 请求
+  async handleAPI(request, url) {
+    const headers = {
+      'Content-Type': 'application/json',
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type',
+    };
+
+    // Handle CORS preflight
+    if (request.method === 'OPTIONS') {
+      return new Response(null, { headers });
+    }
+
+    try {
+      // GET /api/messages/:channel - 获取历史消息
+      if (url.pathname.match(/^\/api\/messages\/(.+)$/)) {
+        const channel = url.pathname.match(/^\/api\/messages\/(.+)$/)[1];
+        const limit = parseInt(url.searchParams.get('limit') || '100');
+
+        const messages = await this.getMessages(channel, limit);
+
+        return new Response(JSON.stringify({
+          ok: true,
+          messages,
+          count: messages.length
+        }), { headers });
+      }
+
+      // POST /api/messages - 保存消息
+      if (url.pathname === '/api/messages' && request.method === 'POST') {
+        const body = await request.json();
+        const { channel, message } = body;
+
+        if (!channel || !message) {
+          return new Response(JSON.stringify({
+            ok: false,
+            error: 'Missing channel or message'
+          }), { status: 400, headers });
+        }
+
+        await this.saveMessage(channel, message);
+
+        return new Response(JSON.stringify({
+          ok: true
+        }), { headers });
+      }
+
+      // 404 for unknown API endpoints
+      return new Response(JSON.stringify({
+        ok: false,
+        error: 'API endpoint not found'
+      }), { status: 404, headers });
+
+    } catch (error) {
+      return new Response(JSON.stringify({
+        ok: false,
+        error: error.message
+      }), { status: 500, headers });
+    }
   }  // WebSocket connection event handler
   async handleSession(connection) {    connection.accept();
 

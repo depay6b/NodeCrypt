@@ -23,7 +23,8 @@ import { t, setLanguage, getCurrentLanguage, initI18n } from './util.i18n.js';
 const DEFAULT_SETTINGS = {
 	notify: false,
 	sound: false,
-	theme: 'theme1'
+	theme: 'theme1',
+	historyRetention: 24 * 60 * 60 * 1000 // 默认保留24小时（单位：毫秒）/ Default 24 hours retention (in milliseconds)
 	// 注意：我们不设置默认语言，让系统自动检测浏览器语言
 	// Note: We don't set a default language, let the system auto-detect browser language
 };
@@ -50,13 +51,15 @@ function saveSettings(settings) {
 		notify,
 		sound,
 		theme,
-		language
+		language,
+		historyRetention
 	} = settings;
 	localStorage.setItem('settings', JSON.stringify({
 		notify,
 		sound,
 		theme,
-		language
+		language,
+		historyRetention
 	}))
 }
 
@@ -129,7 +132,26 @@ function setupSettingsPanel() {
 				</div>
 			</div>
 		</div>
-		
+
+		<div class="settings-section">
+			<div class="settings-section-title">${t('settings.history', 'History Settings')}</div>
+			<div class="settings-item">
+				<div class="settings-item-label">
+					<div>${t('settings.history_retention', 'Message History Retention')}</div>
+				</div>
+				<div class="language-selector">
+					<select id="settings-history-retention" class="language-select">
+						<option value="${1 * 60 * 60 * 1000}" ${settings.historyRetention === 1 * 60 * 60 * 1000 ? 'selected' : ''}>${t('settings.history_1h', '1 Hour')}</option>
+						<option value="${6 * 60 * 60 * 1000}" ${settings.historyRetention === 6 * 60 * 60 * 1000 ? 'selected' : ''}>${t('settings.history_6h', '6 Hours')}</option>
+						<option value="${12 * 60 * 60 * 1000}" ${settings.historyRetention === 12 * 60 * 60 * 1000 ? 'selected' : ''}>${t('settings.history_12h', '12 Hours')}</option>
+						<option value="${24 * 60 * 60 * 1000}" ${settings.historyRetention === 24 * 60 * 60 * 1000 ? 'selected' : ''}>${t('settings.history_24h', '24 Hours')}</option>
+						<option value="${3 * 24 * 60 * 60 * 1000}" ${settings.historyRetention === 3 * 24 * 60 * 60 * 1000 ? 'selected' : ''}>${t('settings.history_3d', '3 Days')}</option>
+						<option value="${7 * 24 * 60 * 60 * 1000}" ${settings.historyRetention === 7 * 24 * 60 * 60 * 1000 ? 'selected' : ''}>${t('settings.history_1w', '1 Week')}</option>
+					</select>
+				</div>
+			</div>
+		</div>
+
 		<div class="settings-section">
 			<div class="settings-section-title">${t('settings.theme', 'Theme Settings')}</div>
 			<div class="theme-selector" id="theme-selector">
@@ -142,7 +164,17 @@ function setupSettingsPanel() {
 	`;	const notifyCheckbox = $('#settings-notify', settingsContent);
 	const soundCheckbox = $('#settings-sound', settingsContent);
 	const languageSelect = $('#settings-language', settingsContent);
-	
+	const historyRetentionSelect = $('#settings-history-retention', settingsContent);
+
+	// History retention select event handler
+	// 历史消息保留时间选择事件处理
+	on(historyRetentionSelect, 'change', e => {
+		const newRetention = parseInt(e.target.value);
+		settings.historyRetention = newRetention;
+		saveSettings(settings);
+		applySettings(settings);
+	});
+
 	// Language select event handler
 	// 语言选择事件处理
 	on(languageSelect, 'change', e => {

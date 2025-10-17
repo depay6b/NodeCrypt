@@ -51,7 +51,9 @@ import {
 import {
 	roomsData,         // 当前所有房间的数据 / Data of all rooms
 	activeRoomIndex,   // 当前激活的房间索引 / Index of the active room
-	joinRoom           // 加入房间的函数 / Function to join a room
+	joinRoom,          // 加入房间的函数 / Function to join a room
+	loadRoomState,     // 加载保存的房间状态 / Load saved room state
+	uploadMessageToServer  // 上传消息到服务器 / Upload message to server
 } from './room.js';
 
 // 从 chat.js 中导入聊天功能相关的函数
@@ -114,6 +116,37 @@ window.addEventListener('DOMContentLoaded', () => {
 	
 	// 初始化登录表单 / Initialize login form
 	initLoginForm();
+
+	// Check for saved room state and auto-reconnect
+	// 检查是否有保存的房间状态并自动重连
+	const savedRoomState = loadRoomState();
+	if (savedRoomState && savedRoomState.roomName && savedRoomState.userName) {
+		// Hide login container and show chat container
+		// 隐藏登录容器，显示聊天容器
+		const loginContainer = $id('login-container');
+		const chatContainer = $id('chat-container');
+		if (loginContainer) loginContainer.style.display = 'none';
+		if (chatContainer) chatContainer.style.display = '';
+
+		// Auto-join the saved room
+		// 自动加入保存的房间
+		setTimeout(() => {
+			joinRoom(
+				savedRoomState.userName,
+				savedRoomState.roomName,
+				savedRoomState.password || '',
+				null,
+				(success) => {
+					if (!success) {
+						// If reconnection failed, show login container again
+						// 如果重连失败，再次显示登录容器
+						if (loginContainer) loginContainer.style.display = '';
+						if (chatContainer) chatContainer.style.display = 'none';
+					}
+				}
+			);
+		}, 100);
+	}
 
 	const loginForm = $id('login-form');               // 登录表单 / Login form
 
@@ -217,6 +250,13 @@ window.addEventListener('DOMContentLoaded', () => {
 						};
 						const encryptedMessageForServer = rd.chat.encryptServerMessage(serverRelayPayload, rd.chat.serverShared);						rd.chat.sendMessage(encryptedMessageForServer);
 						addMsg(messageContent, false, 'image_private');
+
+						// Upload message to server
+						// 上传消息到服务器
+						const lastMsg = rd.messages[rd.messages.length - 1];
+						if (lastMsg) {
+							uploadMessageToServer(rd.roomName, lastMsg);
+						}
 					} else {
 						addSystemMsg(`${t('system.private_message_failed', 'Cannot send private message to')} ${rd.privateChatTargetName}. ${t('system.user_not_connected', 'User might not be fully connected.')}`)
 					}
@@ -225,8 +265,15 @@ window.addEventListener('DOMContentLoaded', () => {
 					// Send image message to public channel
 					rd.chat.sendChannelMessage('image', messageContent);
 					addMsg(messageContent, false, 'image');
+
+					// Upload message to server
+					// 上传消息到服务器
+					const lastMsg = rd.messages[rd.messages.length - 1];
+					if (lastMsg) {
+						uploadMessageToServer(rd.roomName, lastMsg);
+					}
 				}
-				
+
 				imagePasteHandler.clearImages(); // 清除所有图片预览
 			} else if (text) {
 				// 发送纯文本消息
@@ -249,6 +296,13 @@ window.addEventListener('DOMContentLoaded', () => {
 						};
 						const encryptedMessageForServer = rd.chat.encryptServerMessage(serverRelayPayload, rd.chat.serverShared);
 						rd.chat.sendMessage(encryptedMessageForServer);					addMsg(text, false, 'text_private');
+
+						// Upload message to server
+						// 上传消息到服务器
+						const lastMsg = rd.messages[rd.messages.length - 1];
+						if (lastMsg) {
+							uploadMessageToServer(rd.roomName, lastMsg);
+						}
 					} else {
 						addSystemMsg(`${t('system.private_message_failed', 'Cannot send private message to')} ${rd.privateChatTargetName}. ${t('system.user_not_connected', 'User might not be fully connected.')}`)
 					}
@@ -256,7 +310,15 @@ window.addEventListener('DOMContentLoaded', () => {
 					// 公共频道消息发送
 					// Send public message
 					rd.chat.sendChannelMessage('text', text);
-					addMsg(text);				}
+					addMsg(text);
+
+					// Upload message to server
+					// 上传消息到服务器
+					const lastMsg = rd.messages[rd.messages.length - 1];
+					if (lastMsg) {
+						uploadMessageToServer(rd.roomName, lastMsg);
+					}
+				}
 			}
 			
 			// 清空输入框并触发 input 事件
@@ -305,10 +367,17 @@ window.addEventListener('DOMContentLoaded', () => {
 						};
 						const encryptedMessageForServer = rd.chat.encryptServerMessage(serverRelayPayload, rd.chat.serverShared);
 						rd.chat.sendMessage(encryptedMessageForServer);
-						
+
 						// 添加到自己的聊天记录
 						if (msgWithUser.type === 'file_start') {
 							addMsg(msgWithUser, false, 'file_private');
+
+							// Upload message to server
+							// 上传消息到服务器
+							const lastMsg = rd.messages[rd.messages.length - 1];
+							if (lastMsg) {
+								uploadMessageToServer(rd.roomName, lastMsg);
+							}
 						}					} else {
 						addSystemMsg(`${t('system.private_file_failed', 'Cannot send private file to')} ${rd.privateChatTargetName}. ${t('system.user_not_connected', 'User might not be fully connected.')}`)
 					}
@@ -316,10 +385,17 @@ window.addEventListener('DOMContentLoaded', () => {
 					// 公共频道文件发送
 					// Send file to public channel
 					rd.chat.sendChannelMessage(msgWithUser.type, msgWithUser);
-					
+
 					// 添加到自己的聊天记录
 					if (msgWithUser.type === 'file_start') {
 						addMsg(msgWithUser, false, 'file');
+
+						// Upload message to server
+						// 上传消息到服务器
+						const lastMsg = rd.messages[rd.messages.length - 1];
+						if (lastMsg) {
+							uploadMessageToServer(rd.roomName, lastMsg);
+						}
 					}
 				}
 			}		}

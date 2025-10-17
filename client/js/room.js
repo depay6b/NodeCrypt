@@ -24,6 +24,175 @@ import { t } from './util.i18n.js';
 let roomsData = [];
 let activeRoomIndex = -1;
 
+// Get history retention time from settings
+// 从设置中获取历史消息保留时间
+function getHistoryRetention() {
+	try {
+		const settings = localStorage.getItem('settings');
+		if (settings) {
+			const parsed = JSON.parse(settings);
+			return parsed.historyRetention || (24 * 60 * 60 * 1000); // Default 24 hours
+		}
+	} catch (e) {
+		console.error('Error reading history retention setting:', e);
+	}
+	return 24 * 60 * 60 * 1000; // Default 24 hours
+}
+
+// Save room state to localStorage
+// 保存房间状态到 localStorage
+export function saveRoomState(roomName, userName, password) {
+	try {
+		const roomState = {
+			roomName,
+			userName,
+			password,
+			timestamp: Date.now()
+		};
+		localStorage.setItem('nodecrypt_room_state', JSON.stringify(roomState));
+	} catch (e) {
+		console.error('Error saving room state:', e);
+	}
+}
+
+// Load room state from localStorage
+// 从 localStorage 恢复房间状态
+export function loadRoomState() {
+	try {
+		const stored = localStorage.getItem('nodecrypt_room_state');
+		if (stored) {
+			return JSON.parse(stored);
+		}
+	} catch (e) {
+		console.error('Error loading room state:', e);
+	}
+	return null;
+}
+
+// Clear room state from localStorage
+// 从 localStorage 清除房间状态
+export function clearRoomState() {
+	try {
+		localStorage.removeItem('nodecrypt_room_state');
+	} catch (e) {
+		console.error('Error clearing room state:', e);
+	}
+}
+
+// Save room messages to localStorage
+// 保存房间历史消息到 localStorage
+export function saveRoomMessages(roomName, messages) {
+	try {
+		const retention = getHistoryRetention();
+		const messageData = {
+			roomName,
+			messages,
+			timestamp: Date.now(),
+			expiresAt: Date.now() + retention
+		};
+		const key = `nodecrypt_messages_${roomName}`;
+		localStorage.setItem(key, JSON.stringify(messageData));
+	} catch (e) {
+		console.error('Error saving room messages:', e);
+	}
+}
+
+// Load room messages from localStorage
+// 从 localStorage 恢复房间历史消息
+export function loadRoomMessages(roomName) {
+	try {
+		const key = `nodecrypt_messages_${roomName}`;
+		const stored = localStorage.getItem(key);
+		if (stored) {
+			const messageData = JSON.parse(stored);
+			// Check if messages have expired
+			// 检查消息是否已过期
+			if (messageData.expiresAt && messageData.expiresAt > Date.now()) {
+				return messageData.messages || [];
+			} else {
+				// Messages expired, remove them
+				// 消息已过期，删除它们
+				localStorage.removeItem(key);
+			}
+		}
+	} catch (e) {
+		console.error('Error loading room messages:', e);
+	}
+	return [];
+}
+
+// Clear room messages from localStorage
+// 从 localStorage 清除房间历史消息
+export function clearRoomMessages(roomName) {
+	try {
+		const key = `nodecrypt_messages_${roomName}`;
+		localStorage.removeItem(key);
+	} catch (e) {
+		console.error('Error clearing room messages:', e);
+	}
+}
+
+// Auto-save messages with throttling to avoid excessive saves
+// 使用节流自动保存消息，避免过度保存
+let saveTimeouts = {}; // Store timeouts for each room
+// 为每个房间存储超时句柄
+
+export function autoSaveRoomMessages(roomName, messages) {
+	// Clear existing timeout for this room
+	// 清除该房间的现有超时
+	if (saveTimeouts[roomName]) {
+		clearTimeout(saveTimeouts[roomName]);
+	}
+
+	// Set new timeout to save after 2 seconds
+	// 设置新的超时，2秒后保存
+	saveTimeouts[roomName] = setTimeout(() => {
+		saveRoomMessages(roomName, messages);
+		delete saveTimeouts[roomName];
+	}, 2000);
+}
+
+// Upload message to server (with encryption)
+// 上传消息到服务器（带加密）
+export async function uploadMessageToServer(roomName, message) {
+	try {
+		const response = await fetch('/api/messages', {
+			method: 'POST',
+			headers: {
+				'Content-Type': 'application/json'
+			},
+			body: JSON.stringify({
+				channel: roomName,
+				message: message
+			})
+		});
+
+		const data = await response.json();
+		if (!data.ok) {
+			console.error('Failed to upload message:', data.error);
+		}
+	} catch (error) {
+		console.error('Error uploading message to server:', error);
+	}
+}
+
+// Download messages from server
+// 从服务器下载消息
+export async function downloadMessagesFromServer(roomName, limit = 100) {
+	try {
+		const response = await fetch(`/api/messages/${encodeURIComponent(roomName)}?limit=${limit}`);
+		const data = await response.json();
+
+		if (data.ok && data.messages) {
+			return data.messages;
+		}
+		return [];
+	} catch (error) {
+		console.error('Error downloading messages from server:', error);
+		return [];
+	}
+}
+
 // Get a new room data object
 // 获取一个新的房间数据对象
 export function getNewRoomData() {
@@ -94,11 +263,53 @@ export function renderRooms(activeId = 0) {
 
 // Join a room
 // 加入一个房间
-export function joinRoom(userName, roomName, password, modal = null, onResult) {
+export async function joinRoom(userName, roomName, password, modal = null, onResult) {
 	const newRd = getNewRoomData();
 	newRd.roomName = roomName;
 	newRd.myUserName = userName;
 	newRd.password = password;
+
+	// Load historical messages if they exist
+	// 加载历史消息（如果存在）
+	const historicalMessages = loadRoomMessages(roomName);
+	if (historicalMessages.length > 0) {
+		newRd.messages = historicalMessages;
+	}
+
+	// Download messages from server and merge with local messages
+	// 从服务器下载消息并与本地消息合并
+	try {
+		const serverMessages = await downloadMessagesFromServer(roomName, 100);
+		if (serverMessages.length > 0) {
+			// Merge server messages with local messages
+			// 将服务器消息与本地消息合并
+			const mergedMessages = [...newRd.messages];
+
+			// Add server messages that are not in local messages
+			// 添加不在本地消息中的服务器消息
+			for (const serverMsg of serverMessages) {
+				const isDuplicate = mergedMessages.some(localMsg =>
+					localMsg.timestamp === serverMsg.timestamp &&
+					JSON.stringify(localMsg.text) === JSON.stringify(serverMsg.text)
+				);
+
+				if (!isDuplicate) {
+					mergedMessages.push(serverMsg);
+				}
+			}
+
+			// Sort messages by timestamp
+			// 按时间戳排序消息
+			mergedMessages.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
+
+			newRd.messages = mergedMessages;
+		}
+	} catch (error) {
+		console.error('Error loading messages from server:', error);
+		// Continue with local messages only if server download fails
+		// 如果服务器下载失败，继续使用本地消息
+	}
+
 	roomsData.push(newRd);
 	const idx = roomsData.length - 1;
 	switchRoom(idx);
@@ -120,13 +331,16 @@ export function joinRoom(userName, roomName, password, modal = null, onResult) {
 				if (loginContainer) loginContainer.style.display = 'none';
 				const chatContainer = $id('chat-container');
 				if (chatContainer) chatContainer.style.display = '';
-				
+
 
 			}
 			if (onResult && !closed) {
 				closed = true;
 				onResult(true)
 			}
+			// Save room state after successful connection
+			// 成功连接后保存房间状态
+			saveRoomState(roomName, userName, password);
 			addSystemMsg(t('system.secured', 'connection secured'))
 		},
 		onClientSecured: (user) => handleClientSecured(idx, user),
@@ -196,6 +410,10 @@ export function handleClientSecured(idx, user) {
 			type: 'system',
 			text: msg
 		});
+		// Auto-save messages after adding new message
+		// 添加新消息后自动保存
+		autoSaveRoomMessages(rd.roomName, rd.messages);
+
 		if (activeRoomIndex === idx) addSystemMsg(msg, true);
 		if (window.notifyMessage) {
 			window.notifyMessage(rd.roomName, 'system', msg)
@@ -222,6 +440,10 @@ export function handleClientLeft(idx, clientId) {
 		type: 'system',
 		text: msg
 	});
+	// Auto-save messages after adding new message
+	// 添加新消息后自动保存
+	autoSaveRoomMessages(rd.roomName, rd.messages);
+
 	if (activeRoomIndex === idx) addSystemMsg(msg, true);
 	rd.userList = rd.userList.filter(u => u.clientId !== clientId);
 	delete rd.userMap[clientId];
@@ -321,6 +543,10 @@ export function handleClientMessage(idx, msg) {
 		timestamp: Date.now()
 	});
 
+	// Auto-save messages after adding new message
+	// 添加新消息后自动保存
+	autoSaveRoomMessages(newRd.roomName, newRd.messages);
+
 	// Only add message to chat display if it's for the active room
 	if (activeRoomIndex === idx) {
 		if (window.addOtherMsg) {
@@ -358,14 +584,32 @@ export function togglePrivateChat(targetId, targetName) {
 // 退出当前房间
 export function exitRoom() {
 	if (activeRoomIndex >= 0 && roomsData[activeRoomIndex]) {
-		const chatInst = roomsData[activeRoomIndex].chat;
+		const rd = roomsData[activeRoomIndex];
+
+		// Save messages before exiting
+		// 退出前保存消息
+		if (rd.messages && rd.messages.length > 0) {
+			saveRoomMessages(rd.roomName, rd.messages);
+		}
+
+		// Disconnect chat instance
+		// 断开聊天实例
+		const chatInst = rd.chat;
 		if (chatInst && typeof chatInst.destruct === 'function') {
 			chatInst.destruct()
 		} else if (chatInst && typeof chatInst.disconnect === 'function') {
 			chatInst.disconnect()
 		}
-		roomsData[activeRoomIndex].chat = null;
+
+		rd.chat = null;
 		roomsData.splice(activeRoomIndex, 1);
+
+		// Clear room state if no more rooms
+		// 如果没有更多房间，清除房间状态
+		if (roomsData.length === 0) {
+			clearRoomState();
+		}
+
 		if (roomsData.length > 0) {
 			switchRoom(0);
 			return true
